@@ -187,14 +187,11 @@ module Instaview
         media_items: extracted_media,
         all_images: all_images.select { |img| img.start_with?('http') }.first(10), # Limit output
         download_links: download_links,
-        instagram_links: all_links.select { |l| l.include?("instagram") || l.include?("storiesig") }.first(10),
-        page_title: doc.css('title').text,
         error_message: error_message,
         success: extracted_media.length > 0,
         debug_info: {
           total_images: all_images.length,
           total_links: all_links.length,
-          page_url: driver.current_url
         }
       }
 
@@ -244,11 +241,9 @@ module Instaview
         result = {
           username: target_username,
           method: "simple_http_curl",
-          page_title: title,
           forms_found: forms.length,
           inputs_found: inputs.length,
           sample_images: images.first(3),
-          instagram_links: links.first(5),
           message: "Simple HTTP method using curl - shows page structure. For full automation use selenium method."
         }
         

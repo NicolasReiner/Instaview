@@ -102,7 +102,6 @@ puts result
 {
   "username": "instagram",
   "method": "simple_http_curl",
-  "page_title": "Anonymous Instagram Story Viewer ✔️ ❤️ StoriesIG",
   "forms_found": 1,
   "inputs_found": 1,
   "message": "Simple HTTP method using curl - shows page structure."
