@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+puts "Setting up Instaview gem..."
+
+# Check if Chrome/Chromium is installed
+puts "Checking for Chrome/Chromium installation..."
+
+chrome_paths = [
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/chromium",
+  "/snap/bin/chromium"
+]
+
+chrome_found = chrome_paths.any? { |path| File.exist?(path) }
+
+if chrome_found
+  puts "✓ Chrome/Chromium found!"
+else
+  puts "⚠ Chrome/Chromium not found. Installing..."
+  
+  # Try to install chromium
+  if system("which apt-get > /dev/null 2>&1")
+    system("sudo apt-get update && sudo apt-get install -y chromium-browser")
+  elsif system("which yum > /dev/null 2>&1")
+    system("sudo yum install -y chromium")
+  elsif system("which snap > /dev/null 2>&1")
+    system("sudo snap install chromium")
+  else
+    puts "Please install Chrome or Chromium manually:"
+    puts "Ubuntu/Debian: sudo apt-get install chromium-browser"
+    puts "CentOS/RHEL: sudo yum install chromium"
+    puts "Or download Chrome from: https://www.google.com/chrome/"
+  end
+end
+
+puts "Setup complete! You can now use the instaview gem."
+puts "Usage: ruby bin/instaview <username>"
