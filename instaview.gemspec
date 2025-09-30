@@ -8,8 +8,8 @@ Gem::Specification.new do |spec|
   spec.authors = ["Nicolas Reiner"]
   spec.email = ["nici.ferd@gmail.com"]
 
-  spec.summary = "Instagram viewer gem using Playwright for scraping Instagram stories and media"
-  spec.description = "A Ruby gem that uses Playwright to scrape Instagram stories and media from third-party services"
+  spec.summary = "Instagram viewer gem using Selenium for scraping Instagram stories and media"
+  spec.description = "A Ruby gem that uses Selenium to scrape Instagram stories and media from third-party services"
   spec.homepage = "https://github.com/nicolasreiner/instaview"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
