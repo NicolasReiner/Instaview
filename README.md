@@ -86,7 +86,7 @@ puts result
     {
       "image_url": "https://media.storiesig.info/get?__sig=...",
       "alt_text": "preview",
-      "caption": "It's that time of the year again, our General Assembly is here! ✨",
+      "caption": "Some caption text.",
       "download_url": "https://media.storiesig.info/get?__sig=...",
       "likes": "8",
       "time": "2 weeks ago",
