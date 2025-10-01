@@ -38,6 +38,8 @@ Gem::Specification.new do |spec|
   spec.add_dependency "json", "~> 2.0"
   spec.add_dependency "selenium-webdriver", "~> 4.0"
 
+  spec.allowed_push_host = "https://rubygems.org|https://rubygems.pkg.github.com/NicolasReiner"
+
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
 end
