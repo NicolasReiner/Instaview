@@ -10,6 +10,7 @@ A Ruby gem that uses Selenium WebDriver to scrape Instagram stories and media fr
 - Headless browser automation with fallback HTTP method
 - JSON output format with structured data
 - Command-line interface with multiple methods
+- Built-in local JSON cache with 12h TTL and async fetching
 
 ## Installation
 
@@ -47,11 +48,11 @@ sudo apt-get install chromium-browser
 # Test the gem
 ruby bin/instaview test
 
-# Using the HTTP method (recommended, more reliable)
-ruby bin/instaview instagram http
+# Using the Selenium method (default)
+ruby bin/instaview instagram
 
-# Using the Selenium method (full automation, may have issues with anti-bot measures)
-ruby bin/instaview instagram selenium
+# Using the HTTP method (fallback/diagnostic)
+ruby bin/instaview instagram http
 
 # Or if installed as a gem
 instaview username_here http
@@ -65,11 +66,15 @@ require 'instaview'
 # Test connectivity
 Instaview.test_connectivity
 
-# Use simple HTTP method (recommended)
-result = Instaview.scrape_with_simple_http("instagram")
+# Cache-first with 12h TTL; falls back to fetch when stale/missing
+result = Instaview.get_from_cache_or_async("instagram")
 
-# Or try Selenium method (full automation)
-result = Instaview.scrape_instagram_stories("instagram")
+# Cache-only (no network); returns nil if stale/missing
+cached = Instaview.load_from_cache_only("instagram")
+
+# Start an async fetch and get the result later
+t = Instaview.fetch_data_async("instagram", method: :selenium)
+result = t.value  # waits for completion
 
 puts result
 ```
@@ -81,6 +86,7 @@ puts result
 {
   "username": "instagram",
   "method": "selenium_storiesig",
+  "page_state": "media_found",
   "media_items_found": 3,
   "media_items": [
     {
@@ -90,10 +96,25 @@ puts result
       "download_url": "https://media.storiesig.info/get?__sig=...",
       "likes": "8",
       "time": "2 weeks ago",
-      "time_title": "9/13/2025, 8:20:20 AM"
+      "time_title": "2025-09-13T08:20:20Z"
     }
   ],
-  "success": true
+  "all_images": [
+    "https://media.storiesig.info/get?__sig=...",
+    "https://cdn.example.com/asset.jpg"
+  ],
+  "download_links": [
+    "https://media.storiesig.info/get?__sig=..."
+  ],
+  "error_message": null,
+  "success": true,
+  "debug_info": {
+    "total_images": 25,
+    "total_links": 80
+  }
+  /* When served from cache, the top-level object may also include:
+     "cached": true
+  */
 }
 ```
 
@@ -104,9 +125,23 @@ puts result
   "method": "simple_http_curl",
   "forms_found": 1,
   "inputs_found": 1,
-  "message": "Simple HTTP method using curl - shows page structure."
+  "sample_images": [
+    "https://cdn.example.com/image1.jpg",
+    "https://cdn.example.com/image2.jpg"
+  ],
+  "message": "Simple HTTP method using curl - shows page structure. For full automation use selenium method."
 }
 ```
+
+## Caching
+
+Instaview stores successful results as JSON cache files per username. By default:
+
+- Cache directory: `~/.cache/instaview` (override with `INSTAVIEW_CACHE_DIR`)
+- File name: `<username>.json`
+- Default TTL: 12 hours
+
+You will see `"cached": true` in the JSON when the result was served from cache.
 
 ## Dependencies
 
@@ -148,6 +183,7 @@ If you encounter issues with Selenium WebDriver:
 - Some sites have anti-bot measures that may block automated requests
 - The HTTP method provides basic page structure analysis
 - For full automation, Selenium is needed but may face restrictions
+- If you see Selenium logs on every run, it likely means cache is empty or stale; run twice within 12h to observe cached responses.
 
 ## Legal Notice
 

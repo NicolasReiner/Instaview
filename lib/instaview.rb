@@ -12,14 +12,31 @@ require 'time'
 module Instaview
   class Error < StandardError; end
   
+  # @description
+  #   Default accessor that returns data for a username. Tries cache first (12h TTL),
+  #   otherwise performs an async fetch and returns the fetched result.
+  # @Parameter
+  #   username: String - Instagram username to retrieve data for (required)
+  # @Return values
+  #   Hash - Parsed result of the scraping, potentially annotated with `:cached => true`
+  # @Errors
+  #   ArgumentError - if `username` is nil or empty
   def self.getData(username = nil)
     # Default data accessor: try cache first (12h TTL), otherwise fetch asynchronously and return result
     raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
     get_from_cache_or_async(username, max_age_hours: 12)
   end
 
-  # Returns a Thread that performs the network request and writes result to cache.
-  # The thread's value is the result Hash returned by the scraper.
+  # @description
+  #   Start an asynchronous fetch for the given username and write the result to cache on success.
+  # @Parameter
+  #   username: String - Instagram username (required)
+  #   method: Symbol - :selenium (default) or :simple_http to choose the scraping backend
+  # @Return values
+  #   Thread - The started thread; `thread.value` returns the Hash result when finished
+  # @Errors
+  #   ArgumentError - if `username` is nil or empty
+  #   RuntimeError or StandardError - on scraping failures raised inside the thread when joining
   def self.fetch_data_async(username, method: :selenium)
     raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
 
@@ -49,7 +66,16 @@ module Instaview
     end
   end
 
-  # Try to load from cache; if missing or older than max_age_hours, fetch via async and return its result.
+  # @description
+  #   Try to load from local cache; if missing or older than the given TTL, fetch via async and return the fresh result.
+  # @Parameter
+  #   username: String - Instagram username (required)
+  #   max_age_hours: Integer - Cache TTL in hours (default: 12)
+  #   method: Symbol - :selenium (default) or :simple_http
+  # @Return values
+  #   Hash - Cached or freshly fetched data; cached results will include `:cached => true`
+  # @Errors
+  #   ArgumentError - if `username` is nil or empty
   def self.get_from_cache_or_async(username, max_age_hours: 12, method: :selenium)
     max_age_seconds = (max_age_hours.to_i * 3600)
     cached = read_from_cache(username, max_age_seconds: max_age_seconds)
@@ -62,8 +88,15 @@ module Instaview
     t.value # join and return result
   end
 
-  # Return cached data if present and not older than max_age_hours; otherwise return nil.
-  # This method will not trigger any network requests.
+  # @description
+  #   Return cached data if present and fresh; otherwise return nil. This method does not perform network I/O.
+  # @Parameter
+  #   username: String - Instagram username (required)
+  #   max_age_hours: Integer - Cache TTL in hours (default: 12)
+  # @Return values
+  #   Hash or nil - Cached data Hash if fresh; nil if missing or stale
+  # @Errors
+  #   ArgumentError - if `username` is nil or empty
   def self.load_from_cache_only(username, max_age_hours: 12)
     raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
     max_age_seconds = (max_age_hours.to_i * 3600)
@@ -71,15 +104,40 @@ module Instaview
   end
 
   # --- Cache helpers ---
+  # @description
+  #   Resolve the directory used to store cache files.
+  # @Parameter
+  #   None
+  # @Return values
+  #   String - Absolute path to the cache directory; defaults to ~/.cache/instaview, overridable by INSTAVIEW_CACHE_DIR
+  # @Errors
+  #   None
   def self.cache_dir
     ENV['INSTAVIEW_CACHE_DIR'] || File.join(Dir.home, ".cache", "instaview")
   end
 
+  # @description
+  #   Compute the cache file path for a given username.
+  # @Parameter
+  #   username: String - Instagram username
+  # @Return values
+  #   String - Full path to the JSON cache file for the username
+  # @Errors
+  #   None
   def self.cache_file_for(username)
     sanitized = username.to_s.gsub(/[^a-zA-Z0-9_\-.]/, '_')
     File.join(cache_dir, "#{sanitized}.json")
   end
 
+  # @description
+  #   Read a cached result for username if the file exists and is within the max age.
+  # @Parameter
+  #   username: String - Instagram username
+  #   max_age_seconds: Integer - Maximum cache age in seconds (default: 43_200 => 12h)
+  # @Return values
+  #   Hash or nil - Parsed JSON data with `:cached => true` added, or nil if stale/missing/corrupt
+  # @Errors
+  #   JSON::ParserError is rescued internally; returns nil when parse fails
   def self.read_from_cache(username, max_age_seconds: 43_200)
     path = cache_file_for(username)
     return nil unless File.exist?(path)
@@ -98,12 +156,29 @@ module Instaview
     nil
   end
 
+  # @description
+  #   Write the provided data Hash to the cache file for the username.
+  # @Parameter
+  #   username: String - Instagram username
+  #   data: Hash - Data to persist as JSON
+  # @Return values
+  #   true - On success
+  # @Errors
+  #   StandardError - on underlying file I/O @errors
   def self.write_to_cache(username, data)
     FileUtils.mkdir_p(cache_dir)
     File.write(cache_file_for(username), JSON.pretty_generate(data))
     true
   end
 
+  # @description
+  #   Use Selenium WebDriver to automate StoriesIG and extract media details for a username.
+  # @Parameter
+  #   username: String - Instagram username (required)
+  # @Return values
+  #   Hash - Structured result including extracted media and metadata
+  # @Errors
+  #   StandardError - on Selenium/WebDriver failures or selector timeouts
   def self.scrape_instagram_stories(username = nil)
     target_username = username || ARGV[0] # pass username as argument
 
@@ -305,6 +380,15 @@ module Instaview
     end
   end
 
+  # @description
+  #   Fetch StoriesIG homepage via curl and parse basic page signals (fallback method).
+  # @Parameter
+  #   username: String - Instagram username (required)
+  # @Return values
+  #   Hash - Basic page analysis and sample assets; primarily for diagnostics
+  # @Errors
+  #   ArgumentError - if `username` is nil or empty
+  #   StandardError - if the curl command fails or returns empty content
   def self.scrape_with_simple_http(username = nil)
     target_username = username
     throw ArgumentError, "Username is required for simple HTTP method" if target_username.nil? || target_username.empty?
@@ -349,6 +433,14 @@ module Instaview
     end
   end
   
+  # @description
+  #   Verify gem wiring and surface available methods and version info.
+  # @Parameter
+  #   None
+  # @Return values
+  #   Hash - Connectivity report
+  # @Errors
+  #   None
   def self.test_connectivity
     # Simple test method to verify the gem works
     puts "Testing Instaview gem connectivity..."
@@ -372,6 +464,14 @@ module Instaview
     result
   end
 
+  # @description
+  #   Legacy parsing example for instaview.me; currently a stub.
+  # @Parameter
+  #   None
+  # @Return values
+  #   nil
+  # @Errors
+  #   StandardError - on network/read @errors
   def self.parseData
     # Using a third-party web app, to get Instagram data.
     # Afterwards, we use Nokogiri to parse the HTML.
