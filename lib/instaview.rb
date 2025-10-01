@@ -6,12 +6,102 @@ require 'nokogiri'
 require 'json'
 require 'net/http'
 require 'uri'
+require 'fileutils'
+require 'time'
 
 module Instaview
   class Error < StandardError; end
   
   def self.getData(username = nil)
-    throw NotImplementedError, "This is a placeholder method."
+    # Default data accessor: try cache first (12h TTL), otherwise fetch asynchronously and return result
+    raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
+    get_from_cache_or_async(username, max_age_hours: 12)
+  end
+
+  # Returns a Thread that performs the network request and writes result to cache.
+  # The thread's value is the result Hash returned by the scraper.
+  def self.fetch_data_async(username, method: :selenium)
+    raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
+
+    Thread.new do
+      begin
+        result = case method
+                 when :selenium
+                   scrape_instagram_stories(username)
+                 when :simple_http
+                   scrape_with_simple_http(username)
+                 else
+                   scrape_instagram_stories(username)
+                 end
+
+        # Persist to cache on success
+        begin
+          write_to_cache(username, result)
+        rescue => e
+          warn "Instaview: failed to write cache for #{username}: #{e.message}"
+        end
+
+        result
+      rescue => e
+        warn "Instaview: async fetch failed for #{username}: #{e.message}"
+        raise
+      end
+    end
+  end
+
+  # Try to load from cache; if missing or older than max_age_hours, fetch via async and return its result.
+  def self.get_from_cache_or_async(username, max_age_hours: 12, method: :selenium)
+    max_age_seconds = (max_age_hours.to_i * 3600)
+    cached = read_from_cache(username, max_age_seconds: max_age_seconds)
+    if cached
+      puts "Using cached data for #{username}"
+      return cached
+    end
+    puts "No valid cache found for #{username}, fetching data..."
+    t = fetch_data_async(username, method: method)
+    t.value # join and return result
+  end
+
+  # Return cached data if present and not older than max_age_hours; otherwise return nil.
+  # This method will not trigger any network requests.
+  def self.load_from_cache_only(username, max_age_hours: 12)
+    raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
+    max_age_seconds = (max_age_hours.to_i * 3600)
+    read_from_cache(username, max_age_seconds: max_age_seconds)
+  end
+
+  # --- Cache helpers ---
+  def self.cache_dir
+    ENV['INSTAVIEW_CACHE_DIR'] || File.join(Dir.home, ".cache", "instaview")
+  end
+
+  def self.cache_file_for(username)
+    sanitized = username.to_s.gsub(/[^a-zA-Z0-9_\-.]/, '_')
+    File.join(cache_dir, "#{sanitized}.json")
+  end
+
+  def self.read_from_cache(username, max_age_seconds: 43_200)
+    path = cache_file_for(username)
+    return nil unless File.exist?(path)
+
+    age = Time.now - File.mtime(path)
+    return nil if age > max_age_seconds
+
+    content = File.read(path)
+    data = JSON.parse(content, symbolize_names: true)
+    # annotate so callers can tell it came from cache
+    if data.is_a?(Hash)
+      data[:cached] = true
+    end
+    data
+  rescue JSON::ParserError
+    nil
+  end
+
+  def self.write_to_cache(username, data)
+    FileUtils.mkdir_p(cache_dir)
+    File.write(cache_file_for(username), JSON.pretty_generate(data))
+    true
   end
 
   def self.scrape_instagram_stories(username = nil)
@@ -266,7 +356,15 @@ module Instaview
     result = {
       gem_name: "Instaview",
       version: Instaview::VERSION,
-      methods_available: ["scrape_instagram_stories", "scrape_with_simple_http", "test_connectivity"],
+      methods_available: [
+        "scrape_instagram_stories",
+        "scrape_with_simple_http",
+        "fetch_data_async",
+        "get_from_cache_or_async",
+        "load_from_cache_only",
+        "getData",
+        "test_connectivity"
+      ],
       status: "OK"
     }
     

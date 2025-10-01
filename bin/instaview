@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'json'
+require 'stringio'
 require_relative "../lib/instaview"
 
 def show_usage
@@ -42,13 +44,37 @@ unless %w[selenium http].include?(method)
 end
 
 begin
+  # Try cache-only first (12h TTL)
+  cached = Instaview.load_from_cache_only(username)
+  if cached
+    puts JSON.pretty_generate(cached)
+    exit 0
+  end
+
+  # Helper to silence noisy library logs and only print final JSON
+  def silence_output
+    orig_out, orig_err = $stdout, $stderr
+    $stdout = StringIO.new
+    $stderr = StringIO.new
+    yield
+  ensure
+    $stdout = orig_out
+    $stderr = orig_err
+  end
+
   case method
   when "selenium"
-    puts "Using Selenium WebDriver method..."
-    Instaview.scrape_instagram_stories(username)
+    result = nil
+    silence_output do
+      result = Instaview.get_from_cache_or_async(username, max_age_hours: 12, method: :selenium)
+    end
+    puts JSON.pretty_generate(result)
   when "http"
-    puts "Using simple HTTP method..."
-    Instaview.scrape_with_simple_http(username)
+    result = nil
+    silence_output do
+      result = Instaview.get_from_cache_or_async(username, max_age_hours: 12, method: :simple_http)
+    end
+    puts JSON.pretty_generate(result)
   end
 rescue => e
   puts "Error: #{e.message}"
