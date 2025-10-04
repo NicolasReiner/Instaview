@@ -8,6 +8,7 @@ require 'net/http'
 require 'uri'
 require 'fileutils'
 require 'time'
+require 'thread'
 
 module Instaview
   class Error < StandardError; end
@@ -41,28 +42,25 @@ module Instaview
     raise ArgumentError, "username is required" if username.nil? || username.to_s.strip.empty?
 
     Thread.new do
-      begin
-        result = case method
-                 when :selenium
-                   scrape_instagram_stories(username)
-                 when :simple_http
-                   scrape_with_simple_http(username)
-                 else
-                   scrape_instagram_stories(username)
-                 end
+      result = case method
+               when :selenium
+                 scrape_instagram_stories(username)
+               when :simple_http
+                 scrape_with_simple_http(username)
+               else
+                 scrape_instagram_stories(username)
+               end
 
-        # Persist to cache on success
+      # Persist to cache on success
+      if data_found?(result)
         begin
           write_to_cache(username, result)
-        rescue => e
-          warn "Instaview: failed to write cache for #{username}: #{e.message}"
+        rescue StandardError
+          # Ignore cache write failures to avoid affecting callers
         end
-
-        result
-      rescue => e
-        warn "Instaview: async fetch failed for #{username}: #{e.message}"
-        raise
       end
+
+      result
     end
   end
 
@@ -79,11 +77,8 @@ module Instaview
   def self.get_from_cache_or_async(username, max_age_hours: 12, method: :selenium)
     max_age_seconds = (max_age_hours.to_i * 3600)
     cached = read_from_cache(username, max_age_seconds: max_age_seconds)
-    if cached
-      puts "Using cached data for #{username}"
-      return cached
-    end
-    puts "No valid cache found for #{username}, fetching data..."
+    return cached if cached
+
     t = fetch_data_async(username, method: method)
     t.value # join and return result
   end
@@ -147,6 +142,7 @@ module Instaview
 
     content = File.read(path)
     data = JSON.parse(content, symbolize_names: true)
+    return nil unless data_found?(data)
     # annotate so callers can tell it came from cache
     if data.is_a?(Hash)
       data[:cached] = true
@@ -171,6 +167,29 @@ module Instaview
     true
   end
 
+  def self.data_found?(data)
+    return false unless data.is_a?(Hash)
+
+    success = data[:success]
+    return true if success == true
+
+    method = data[:method]
+
+    if method == "selenium_storiesig"
+      media_found = data[:media_items_found].to_i > 0
+      media_present = data[:media_items].is_a?(Array) && !data[:media_items].empty?
+      return true if media_found || media_present
+    elsif method == "simple_http_curl"
+      forms_found = data[:forms_found].to_i > 0
+      inputs_found = data[:inputs_found].to_i > 0
+      samples_present = data[:sample_images].is_a?(Array) && !data[:sample_images].empty?
+      return true if forms_found || inputs_found || samples_present
+    end
+
+    false
+  end
+  private_class_method :data_found?
+
   # @description
   #   Use Selenium WebDriver to automate StoriesIG and extract media details for a username.
   # @Parameter
@@ -178,10 +197,11 @@ module Instaview
   # @Return values
   #   Hash - Structured result including extracted media and metadata
   # @Errors
-  #   StandardError - on Selenium/WebDriver failures or selector timeouts
+  #   Instaview::Error - on Selenium/WebDriver failures or selector timeouts
   def self.scrape_instagram_stories(username = nil)
     target_username = username || ARGV[0] # pass username as argument
 
+    driver = nil
     begin
       # Setup Selenium WebDriver with headless Chrome
       options = Selenium::WebDriver::Chrome::Options.new
@@ -204,14 +224,10 @@ module Instaview
         "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome"
       ]
-      
+
       chrome_binary = chrome_paths.find { |path| File.exist?(path) }
-      
-      if chrome_binary
-        options.binary = chrome_binary
-        puts "Using Chrome binary: #{chrome_binary}"
-      end
-      
+      options.binary = chrome_binary if chrome_binary
+
       driver = Selenium::WebDriver.for :chrome, options: options
 
       # 1) Go to StoriesIG homepage
@@ -219,65 +235,54 @@ module Instaview
       sleep 2
 
       # 2) Find the specific search input for StoriesIG
-      puts "Looking for search input..."
-      input_element = nil
-      
-      # Wait for page to load and find the specific input
       wait = Selenium::WebDriver::Wait.new(timeout: 10)
-      
-      begin
-        input_element = wait.until do
+
+      input_element = begin
+        wait.until do
           element = driver.find_element(:css, 'input.search.search-form__input[placeholder*="username"]')
           element if element.displayed?
         end
       rescue Selenium::WebDriver::Error::TimeoutError
-        raise "Search input not found with selector: input.search.search-form__input"
+        raise Instaview::Error, "Search input not found with selector: input.search.search-form__input"
       end
 
-      puts "Found search input, entering username: #{target_username}"
       input_element.clear
       input_element.send_keys(target_username)
 
       # 3) Click the specific search button
-      puts "Looking for search button..."
       begin
         button_element = driver.find_element(:css, 'button.search-form__button')
-        puts "Found search button, clicking..."
         button_element.click
       rescue Selenium::WebDriver::Error::NoSuchElementError
-        puts "Search button not found, trying Enter key..."
         input_element.send_keys(:return)
       end
 
       # 4) Wait for results to load and check different possible outcomes
-      puts "Waiting for results to load..."
       sleep 3
-      
+
       # Check for various possible page states
       page_state = "unknown"
       error_message = nil
-      
+
       # Check if media items loaded
       media_items = driver.find_elements(:css, 'li.profile-media-list__item')
       if media_items.length > 0
         page_state = "media_found"
-        puts "Found #{media_items.length} media items!"
       else
         # Check for error messages or other states
         sleep 2  # Give it more time
         media_items = driver.find_elements(:css, 'li.profile-media-list__item')
-        
+
         if media_items.length > 0
           page_state = "media_found_delayed"
-          puts "Found #{media_items.length} media items after delay!"
         else
           # Look for common error indicators
           error_selectors = [
-            '.error', '.alert', '.warning', 
+            '.error', '.alert', '.warning',
             '[class*="error"]', '[class*="not-found"]',
             'p:contains("not found")', 'div:contains("error")'
           ]
-          
+
           error_found = false
           error_selectors.each do |selector|
             begin
@@ -287,18 +292,12 @@ module Instaview
                 error_found = true
                 break
               end
-            rescue
+            rescue StandardError
               # Continue checking other selectors
             end
           end
-          
-          if error_found
-            page_state = "error_found"
-            puts "Error found: #{error_message}"
-          else
-            page_state = "no_media"
-            puts "No media items found, checking page content..."
-          end
+
+          page_state = error_found ? "error_found" : "no_media"
         end
       end
 
@@ -308,34 +307,34 @@ module Instaview
 
       # Extract specific media items using the provided selector
       media_list_items = doc.css('li.profile-media-list__item')
-      
+
       extracted_media = []
-      media_list_items.each_with_index do |item, index|
+      media_list_items.each do |item|
         media_data = {}
-        
+
         # Extract image source
         img_element = item.css('.media-content__image').first
         if img_element
           media_data[:image_url] = img_element['src']
           media_data[:alt_text] = img_element['alt']
         end
-        
+
         # Extract caption
         caption_element = item.css('.media-content__caption').first
         media_data[:caption] = caption_element&.text&.strip
-        
+
         # Extract download link
         download_element = item.css('a.button.button--filled.button__download').first
         media_data[:download_url] = download_element['href'] if download_element
-        
+
         # Extract metadata
         like_element = item.css('.media-content__meta-like').first
         media_data[:likes] = like_element&.text&.strip
-        
+
         time_element = item.css('.media-content__meta-time').first
         media_data[:time] = time_element&.text&.strip
         media_data[:time_title] = time_element['title'] if time_element
-        
+
         extracted_media << media_data unless media_data.empty?
       end
 
@@ -365,16 +364,13 @@ module Instaview
         screenshot_path = "/tmp/instaview_debug_#{Time.now.to_i}.png"
         driver.save_screenshot(screenshot_path)
         result[:debug_info][:screenshot_path] = screenshot_path
-        puts "Debug screenshot saved to: #{screenshot_path}"
       end
 
-      puts JSON.pretty_generate(result)
-
       result
+    rescue Instaview::Error
+      raise
     rescue => e
-      puts "Error: #{e.message}"
-      puts "Make sure Chrome/Chromium is installed for Selenium WebDriver"
-      raise e
+      raise Instaview::Error, "Selenium scraping failed: #{e.message}"
     ensure
       driver&.quit
     end
@@ -388,48 +384,42 @@ module Instaview
   #   Hash - Basic page analysis and sample assets; primarily for diagnostics
   # @Errors
   #   ArgumentError - if `username` is nil or empty
-  #   StandardError - if the curl command fails or returns empty content
+  #   Instaview::Error - if the curl command fails or other errors occur
   def self.scrape_with_simple_http(username = nil)
     target_username = username
-    throw ArgumentError, "Username is required for simple HTTP method" if target_username.nil? || target_username.empty?
+    raise ArgumentError, "Username is required for simple HTTP method" if target_username.nil? || target_username.empty?
+
     begin
       # Simple HTTP approach using curl
-      puts "Trying to fetch page with curl..."
-      
       curl_command = "curl -s -L -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 'https://storiesig.info/'"
-      
+
       html_content = `#{curl_command}`
-      
-      if $?.success? && !html_content.empty?
-        doc = Nokogiri::HTML(html_content)
-        
-        # Extract basic page information
-        title = doc.css('title').text
-        forms = doc.css('form')
-        inputs = doc.css('input[type="text"], input[name*="user"]')
-        
-        # Look for any existing media or links
-        images = doc.css('img').map { |img| img['src'] }.compact.select { |src| src.start_with?('http') }
-        links = doc.css('a').map { |link| link['href'] }.compact.select { |href| href.include?('instagram') || href.include?('media') }
-        
-        result = {
-          username: target_username,
-          method: "simple_http_curl",
-          forms_found: forms.length,
-          inputs_found: inputs.length,
-          sample_images: images.first(3),
-          message: "Simple HTTP method using curl - shows page structure. For full automation use selenium method."
-        }
-        
-        puts JSON.pretty_generate(result)
-        result
-      else
-        raise "Curl command failed or returned empty content"
+
+      unless $?.success? && !html_content.empty?
+        raise Instaview::Error, "Curl command failed or returned empty content"
       end
+
+      doc = Nokogiri::HTML(html_content)
+
+      # Extract basic page information
+      forms = doc.css('form')
+      inputs = doc.css('input[type="text"], input[name*="user"]')
+
+      # Look for any existing media or links
+      images = doc.css('img').map { |img| img['src'] }.compact.select { |src| src.start_with?('http') }
+
+      {
+        username: target_username,
+        method: "simple_http_curl",
+        forms_found: forms.length,
+        inputs_found: inputs.length,
+        sample_images: images.first(3),
+        message: "Simple HTTP method using curl - shows page structure. For full automation use selenium method."
+      }
+    rescue Instaview::Error
+      raise
     rescue => e
-      puts "Error with simple HTTP method: #{e.message}"
-      puts "Try using scrape_instagram_stories method instead"
-      raise e
+      raise Instaview::Error, "HTTP scraping failed: #{e.message}"
     end
   end
   
@@ -443,9 +433,7 @@ module Instaview
   #   None
   def self.test_connectivity
     # Simple test method to verify the gem works
-    puts "Testing Instaview gem connectivity..."
-    
-    result = {
+    {
       gem_name: "Instaview",
       version: Instaview::VERSION,
       methods_available: [
@@ -459,9 +447,6 @@ module Instaview
       ],
       status: "OK"
     }
-    
-    puts JSON.pretty_generate(result)
-    result
   end
 
   # @description
@@ -482,8 +467,6 @@ module Instaview
     html = URI.open(url)
     doc = Nokogiri::HTML(html)
 
-    doc.xpath("//profile-media-list__item").each do |item|
-      puts item.text
-    end
+    doc.xpath("//profile-media-list__item").map(&:text)
   end
 end

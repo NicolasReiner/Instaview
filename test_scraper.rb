@@ -1,49 +1,31 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require 'stringio'
-require_relative '../lib/instaview'
-
-def silence_output
-  original_stdout = $stdout
-  original_stderr = $stderr
-  $stdout = StringIO.new
-  $stderr = StringIO.new
-  yield
-ensure
-  $stdout = original_stdout
-  $stderr = original_stderr
-end
+require 'fileutils'
+require_relative 'lib/instaview'
 
 username = ARGV[0] || 'instagram'
 
 begin
-  data = nil
+  cache_path = Instaview.cache_file_for(username)
+  FileUtils.rm_f(cache_path)
 
-  # Try cache only first (12h TTL)
-  silence_output do
-    data = Instaview.load_from_cache_only(username)
-  end
+  initial_cache = Instaview.load_from_cache_only(username)
+  raise "cache should be empty" unless initial_cache.nil?
 
-  # Fallback to async fetch with cache write
-  if data.nil?
-    silence_output do
-      data = Instaview.get_from_cache_or_async(username, max_age_hours: 12)
-    end
-  end
+  fetch_thread = Instaview.fetch_data_async(username, method: :simple_http)
+  raise "fetch_data_async must return a Thread" unless fetch_thread.is_a?(Thread)
 
-  # Optionally verify cache can be read after fetch
-  silence_output do
-    Instaview.load_from_cache_only(username)
-  end
+  fresh_result = fetch_thread.value
+  raise "fetch did not return data" unless fresh_result.is_a?(Hash)
+  raise "fresh result should not be marked cached" if fresh_result[:cached]
 
-  if data && data.is_a?(Hash)
-    puts 'success'
-    exit 0
-  else
-    puts 'Error did not receive data'
-    exit 1
-  end
+  cached_result = Instaview.load_from_cache_only(username)
+  raise "cache not populated" if cached_result.nil?
+  raise "cached result missing cached flag" unless cached_result[:cached]
+
+  puts 'success'
+  exit 0
 rescue => e
   puts "Error #{e.message}"
   exit 1
